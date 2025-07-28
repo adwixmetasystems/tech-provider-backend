@@ -1,74 +1,73 @@
 require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
-const fs = require('fs');
 const path = require('path');
-
 const app = express();
-app.use(express.json()); // keep for JSON parsing
 
-const {
-  APP_ID,
-  APP_SECRET,
-  API_VERSION,
-  PORT,
-  DEFAULT_WABA_ID,
-  DEFAULT_PHONE_NUMBER_ID,
-  DEFAULT_PHONE_PIN,
-  SUCCESS_URL
-} = process.env;
+app.use(express.json());
+app.use(express.static(path.join(__dirname, 'public')));
+app.use((req, res, next) => {
+  console.log(`[${req.method}] ${req.originalUrl}`);
+  next();
+});
 
-const logDir = path.join(__dirname, 'logs');
-if (!fs.existsSync(logDir)) fs.mkdirSync(logDir);
-const logFile = path.join(logDir, 'onboarding.log');
-
-function log(message) {
-  const timestamp = new Date().toISOString();
-  const line = `[${timestamp}] ${message}\n`;
-  fs.appendFileSync(logFile, line);
-  console.log(line);
-}
-
-// OAuth Callback
-app.get('/oauth/callback', async (req, res) => {
-  const code = req.query.code;
-  if (!code) {
-    log('❌ Missing code in OAuth redirect.');
-    return res.status(400).send('Missing code.');
+// Webhook verification
+app.get('/webhook', (req, res) => {
+  const { VERIFY_TOKEN } = process.env;
+  if (req.query['hub.mode'] === 'subscribe' && req.query['hub.verify_token'] === VERIFY_TOKEN) {
+    console.log('✅ Webhook Verified');
+    return res.status(200).send(req.query['hub.challenge']);
   }
+  console.warn('❌ Webhook verification failed');
+  return res.sendStatus(403);
+});
 
-  log('🔁 Received OAuth redirect. Starting onboarding...');
+// Webhook event logging
+app.post('/webhook', (req, res) => {
+  console.log('📨 Webhook Event:', JSON.stringify(req.body, null, 2));
+  res.sendStatus(200);
+});
+
+// OAuth code exchange and onboarding
+app.get('/exchange-token', async (req, res) => {
+  const { code } = req.query;
+  if (!code) return res.status(400).send('Missing code');
 
   try {
-    // Step 1: Token exchange
-    log('🔐 STEP 1: Exchanging code for token...');
-    const tokenRes = await axios.get(`https://graph.facebook.com/${API_VERSION}/oauth/access_token`, {
+    // Step 1: Exchange the token code for a business token
+    const tokenResponse = await axios.get('https://graph.facebook.com/v23.0/oauth/access_token', {
       params: {
-        client_id: APP_ID,
-        client_secret: APP_SECRET,
-        code
+        grant_type: 'authorization_code',
+        code,
+        redirect_uri: process.env.REDIRECT_URI,
+        client_id: process.env.CLIENT_ID,
+        client_secret: process.env.CLIENT_SECRET
       }
     });
 
-    const businessToken = tokenRes.data.access_token;
-    log('✅ Token acquired.');
+    const businessToken = tokenResponse.data.access_token;
+    console.log('✅ Access Token:', businessToken);
 
-    // Step 2: Subscribe to WABA
-    log('🔔 STEP 2: Subscribing to WABA...');
-    const subRes = await axios.post(
-      `https://graph.facebook.com/${API_VERSION}/${DEFAULT_WABA_ID}/subscribed_apps`,
+    // Step 2: Subscribe to WABA webhooks
+    const WABA_ID = process.env.WABA_ID; // must be set
+    const subscribeResponse = await axios.post(
+      `https://graph.facebook.com/v23.0/${WABA_ID}/subscribed_apps`,
       {},
-      { headers: { Authorization: `Bearer ${businessToken}` } }
+      {
+        headers: {
+          Authorization: `Bearer ${businessToken}`
+        }
+      }
     );
-    if (subRes.data.success) log('✅ Subscribed to webhooks.');
+    console.log('✅ Subscribed to Webhooks:', subscribeResponse.data);
 
-    // Step 3: Register number
-    log('📞 STEP 3: Registering phone number...');
-    const regRes = await axios.post(
-      `https://graph.facebook.com/${API_VERSION}/${DEFAULT_PHONE_NUMBER_ID}/register`,
+    // Step 3: Register the business phone number
+    const PHONE_ID = process.env.BUSINESS_PHONE_ID; // must be set
+    const registerResponse = await axios.post(
+      `https://graph.facebook.com/v23.0/${PHONE_ID}/register`,
       {
         messaging_product: 'whatsapp',
-        pin: DEFAULT_PHONE_PIN
+        pin: process.env.NUMBER_PIN
       },
       {
         headers: {
@@ -77,25 +76,18 @@ app.get('/oauth/callback', async (req, res) => {
         }
       }
     );
-    if (regRes.data.success) log('✅ Phone number registered.');
+    console.log('✅ Phone Number Registered:', registerResponse.data);
 
-    // Step 5: Notify client to add payment
-    log('💳 STEP 5: Instruct client to add payment: https://business.facebook.com/wa/manage/home/');
-
-    return res.redirect(SUCCESS_URL || 'https://business.facebook.com/wa/manage/home/');
+    // Final success redirect
+    return res.redirect(`${process.env.SUCCESS_URL}?token=${businessToken}`);
   } catch (err) {
-    const errMsg = err?.response?.data || err.message;
-    log(`❌ Error during onboarding: ${JSON.stringify(errMsg)}`);
-    res.status(500).send(`<h2>❌ Onboarding Failed</h2><pre>${JSON.stringify(errMsg, null, 2)}</pre>`);
+    console.error('❌ Onboarding Error:', err.response?.data || err.message);
+    return res.status(500).send('Onboarding failed');
   }
 });
 
-// Health check
-app.get('/', (_, res) => {
-  res.send('🟢 WhatsApp Onboarding Server is Live');
-});
+// catch-all
+app.use((req, res) => res.status(404).send('Not Found'));
 
-// Run server
-app.listen(PORT || 3000, () => {
-  log(`🚀 Server is running on port ${PORT || 3000}`);
-});
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`🚀 Listening on port ${PORT}`));
