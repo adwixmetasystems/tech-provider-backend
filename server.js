@@ -32,7 +32,7 @@ app.post('/webhook', (req, res) => {
 });
 
 // Token Exchange + Onboarding
-app.get('/exchange-token', async (req, res) => {
+app.get('/callback', async (req, res) => {
   const { code, phone_number_id, waba_id } = req.query;
 
   if (!code || !phone_number_id || !waba_id) {
