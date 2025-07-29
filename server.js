@@ -31,6 +31,36 @@ app.post('/webhook', (req, res) => {
   res.sendStatus(200);
 });
 
+// 🔄 Step 2.5: Exchange Code via POST from Embedded Signup
+app.post('/exchange-token', async (req, res) => {
+  const { code, waba_id, phone_number_id } = req.body;
+  if (!code) return res.status(400).send('Missing code');
+
+  try {
+    const tokenRes = await axios.get('https://graph.facebook.com/v23.0/oauth/access_token', {
+      params: {
+        grant_type: 'authorization_code',
+        code,
+        redirect_uri: process.env.REDIRECT_URI,
+        client_id: process.env.CLIENT_ID,
+        client_secret: process.env.CLIENT_SECRET,
+      },
+    });
+
+    const access_token = tokenRes.data.access_token;
+    console.log('✅ Access Token:', access_token);
+    console.log('🆔 WABA ID (from client):', waba_id);
+    console.log('📞 Phone Number ID (from client):', phone_number_id);
+
+    // Optionally store the details in a DB or session
+    return res.status(200).json({ success: true, access_token });
+  } catch (err) {
+    console.error('❌ Token Exchange Error:', err.response?.data || err.message);
+    return res.status(500).send('Token exchange failed');
+  }
+});
+
+
 // ✅ Step 3: Exchange Code for Access Token
 app.get('/exchange-token', async (req, res) => {
   const { code } = req.query;
