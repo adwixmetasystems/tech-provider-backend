@@ -11,7 +11,7 @@ app.use((req, res, next) => {
   next();
 });
 
-// Webhook Verification
+// ✅ Step 1: Webhook Verification (GET)
 app.get('/webhook', (req, res) => {
   const { VERIFY_TOKEN } = process.env;
   if (
@@ -25,23 +25,19 @@ app.get('/webhook', (req, res) => {
   return res.sendStatus(403);
 });
 
-// Webhook Event Logging
+// ✅ Step 2: Webhook Event Receiver (POST)
 app.post('/webhook', (req, res) => {
   console.log('📨 Webhook Event:', JSON.stringify(req.body, null, 2));
   res.sendStatus(200);
 });
 
-// Token Exchange + Onboarding
-app.get('/callback', async (req, res) => {
-  const { code, phone_number_id, waba_id } = req.query;
-
-  if (!code || !phone_number_id || !waba_id) {
-    return res.status(400).send('Missing required parameters (code, phone_number_id, waba_id)');
-  }
+// ✅ Step 3: Exchange Code for Access Token
+app.get('/exchange-token', async (req, res) => {
+  const { code } = req.query;
+  if (!code) return res.status(400).send('Missing code');
 
   try {
-    // Step 1: Exchange code for access token
-    const tokenResponse = await axios.post(`https://graph.facebook.com/v23.0/oauth/access_token`, null, {
+    const tokenRes = await axios.get(`https://graph.facebook.com/v23.0/oauth/access_token`, {
       params: {
         grant_type: 'authorization_code',
         code,
@@ -51,24 +47,76 @@ app.get('/callback', async (req, res) => {
       },
     });
 
-    const access_token = tokenResponse.data.access_token;
+    const access_token = tokenRes.data.access_token;
     console.log('✅ Access Token:', access_token);
 
-    // Step 2: Subscribe to Webhooks
-    const subscribeResponse = await axios.post(
-      `https://graph.facebook.com/v23.0/${waba_id}/subscribed_apps`,
-      {},
-      {
-        headers: {
-          Authorization: `Bearer ${access_token}`,
-        },
-      }
-    );
+    // Return token to frontend or continue with next step
+    return res.status(200).json({ success: true, access_token });
+  } catch (err) {
+    console.error('❌ Token Exchange Error:', err.response?.data || err.message);
+    return res.status(500).send('Token exchange failed');
+  }
+});
 
-    console.log('✅ App Subscribed to Webhooks:', subscribeResponse.data);
+// ✅ Step 4: Fetch WABA ID & Phone Number ID
+app.get('/waba-info', async (req, res) => {
+  const { access_token } = req.query;
+  if (!access_token) return res.status(400).send('Missing access_token');
 
-    // Step 3: Register the phone number
-    const registerResponse = await axios.post(
+  try {
+    // Get Business ID
+    const businessRes = await axios.get('https://graph.facebook.com/v23.0/me', {
+      headers: { Authorization: `Bearer ${access_token}` },
+    });
+
+    const business_id = businessRes.data.id;
+    console.log('✅ Business ID:', business_id);
+
+    // Get WABA ID
+    const wabaRes = await axios.get(`https://graph.facebook.com/v23.0/${business_id}/owned_whatsapp_business_accounts`, {
+      headers: { Authorization: `Bearer ${access_token}` },
+    });
+
+    const waba_id = wabaRes.data.data[0]?.id;
+    if (!waba_id) throw new Error('No WABA ID found');
+    console.log('✅ WABA ID:', waba_id);
+
+    // Add after you get waba_id in /waba-info route
+await axios.post(
+  `https://graph.facebook.com/v23.0/${waba_id}/subscribed_apps`,
+  {},
+  {
+    headers: { Authorization: `Bearer ${access_token}` },
+  }
+);
+console.log('✅ App subscribed to WABA webhooks');
+
+
+    // Get Phone Number ID
+    const phoneRes = await axios.get(`https://graph.facebook.com/v23.0/${waba_id}/phone_numbers`, {
+      headers: { Authorization: `Bearer ${access_token}` },
+    });
+
+    const phone_number_id = phoneRes.data.data[0]?.id;
+    if (!phone_number_id) throw new Error('No phone_number_id found');
+    console.log('✅ Phone Number ID:', phone_number_id);
+
+    res.json({ business_id, waba_id, phone_number_id });
+  } catch (err) {
+    console.error('❌ WABA Info Error:', err.response?.data || err.message);
+    res.status(500).send('Failed to fetch WABA and phone info');
+  }
+});
+
+// ✅ Step 5: Register Phone Number Using PIN
+app.post('/register-phone', async (req, res) => {
+  const { access_token, phone_number_id } = req.body;
+  if (!access_token || !phone_number_id) {
+    return res.status(400).send('Missing access_token or phone_number_id');
+  }
+
+  try {
+    const registerRes = await axios.post(
       `https://graph.facebook.com/v23.0/${phone_number_id}/register`,
       {
         messaging_product: 'whatsapp',
@@ -82,19 +130,18 @@ app.get('/callback', async (req, res) => {
       }
     );
 
-    console.log('✅ Phone Number Registered:', registerResponse.data);
-
-    // Success: Redirect to your frontend
-    return res.redirect(`${process.env.SUCCESS_URL}?token=${access_token}`);
+    console.log('✅ Phone Registered:', registerRes.data);
+    return res.redirect(`${process.env.SUCCESS_URL}?status=success`);
+;
   } catch (err) {
-    console.error('❌ Onboarding Error:', err.response?.data || err.message);
-    return res.status(500).send('Onboarding failed');
+    console.error('❌ Register Error:', err.response?.data || err.message);
+    res.status(500).send('Phone registration failed');
   }
 });
 
-// Catch-all for undefined routes
+// Catch-all for unknown routes
 app.use((req, res) => res.status(404).send('Not Found'));
 
-// Start server
+// Start the server
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🚀 Listening on port ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
