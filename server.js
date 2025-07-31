@@ -175,3 +175,31 @@ app.use((req, res) => res.status(404).send('Not Found'));
 // Start the server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+
+
+const express = require('express');
+const app = express();
+
+app.use(express.json());
+
+// ✅ WhatsApp Embedded Signup INIT Handler
+app.post('/whatsapp-flow', (req, res) => {
+  const { action } = req.body;
+
+  if (action === "INIT") {
+    return res.status(200).json({
+      action: "INIT",
+      status: "success"
+    });
+  }
+
+  // Optionally handle other actions later
+  return res.status(400).json({ error: "Unsupported action" });
+});
+
+// ✅ Start server
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
+
